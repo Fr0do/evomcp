@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evomcp"
+version = "0.1.0"
+description = "GEPA + EvoX evolutionary optimizer as a Claude MCP server and skill"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "fastmcp>=2.0",
+    "pyyaml>=6.0",
+    "dspy-ai>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio"]
+
+[project.scripts]
+evomcp = "evomcp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evomcp*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
