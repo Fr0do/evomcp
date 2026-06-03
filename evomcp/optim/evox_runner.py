@@ -51,6 +51,13 @@ from evomcp.pipeline.registry import DEFAULT_REGISTRY
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class PopulationMember:
+    prog_genome: dict[str, Any]
+    parent_ids: tuple[str, ...] = ()
+    source: str = "random"
+
+
 # ---------------------------------------------------------------------------
 # State (checkpoint / resume)
 # ---------------------------------------------------------------------------
@@ -244,6 +251,7 @@ def run(
     elite_fraction: float = evox_cfg.get("elite_fraction", 0.5)
     immigrant_fraction: float = evox_cfg.get("immigrant_fraction", 0.25)
     stage_gates: dict = evox_cfg.get("stage_gates", {})
+    db_selection_cfg = _load_db_selection_cfg(cfg, evox_cfg)
 
     output_dir = Path(cfg.get("output_dir", "artifacts/runs/evox"))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -279,22 +287,33 @@ def run(
     archive = ParetoArchive()
 
     # Build initial population
-    population: list[dict[str, Any]] = []
-    for _ in range(population_size):
-        g = DEFAULT_REGISTRY.sample_prog_genome(target_slots, rng)
-        population.append(g)
+    population: list[PopulationMember] = _initial_population(
+        population_size=population_size,
+        target_slots=target_slots,
+        rng=rng,
+        program_db=program_db,
+        db_selection_cfg=db_selection_cfg,
+    )
 
-    log.info("EvoX: pop=%d gens=%d slots=%s", population_size, generations, target_slots)
+    log.info(
+        "EvoX: pop=%d gens=%d slots=%s db_selection=%s",
+        population_size,
+        generations,
+        target_slots,
+        "on" if db_selection_cfg["enabled"] and program_db else "off",
+    )
 
     for gen in range(state.generation, generations):
         t0 = time.monotonic()
         gen_results: list[tuple[Candidate, EvalResult]] = []
 
-        for prog_genome in population:
+        for member in population:
+            prog_genome = member.prog_genome
             candidate = Candidate(
                 text_genome=fixed_text,
                 prog_genome=prog_genome,
-                metadata={"mode": "evox", "generation": gen},
+                parent_ids=member.parent_ids,
+                metadata={"mode": "evox", "generation": gen, "source": member.source},
             )
             cid = candidate.candidate_id
             if program_db:
@@ -388,22 +407,29 @@ def run(
             log.warning("All elites below proxy threshold %.3f; widening search.", proxy_threshold)
 
         # Build next population
-        next_population = []
+        next_population: list[PopulationMember] = []
         n_immigrants = max(1, int(population_size * immigrant_fraction))
         for c, _ in elites:
-            next_population.append(
-                DEFAULT_REGISTRY.mutate_prog_genome(dict(c.prog_genome), target_slots, rng)
-            )
+            next_population.append(_mutated_member(c, target_slots, rng, "elite_mutation"))
+        db_parent_pool = _db_parent_pool(program_db, target_slots, db_selection_cfg)
+        n_db_parents = min(
+            len(db_parent_pool),
+            max(0, int(population_size * db_selection_cfg["parent_fraction"])),
+        )
+        for parent in rng.sample(db_parent_pool, n_db_parents) if n_db_parents else []:
+            next_population.append(_mutated_db_member(parent, target_slots, rng))
         for _ in range(n_immigrants):
-            next_population.append(DEFAULT_REGISTRY.sample_prog_genome(target_slots, rng))
+            next_population.append(_random_member(target_slots, rng))
         while len(next_population) < population_size:
             parent = rng.choice(elites)[0] if elites else None
             if parent:
-                next_population.append(
-                    DEFAULT_REGISTRY.mutate_prog_genome(dict(parent.prog_genome), target_slots, rng)
-                )
+                next_population.append(_mutated_member(parent, target_slots, rng, "elite_mutation"))
             else:
-                next_population.append(DEFAULT_REGISTRY.sample_prog_genome(target_slots, rng))
+                db_parent = rng.choice(db_parent_pool) if db_parent_pool else None
+                if db_parent:
+                    next_population.append(_mutated_db_member(db_parent, target_slots, rng))
+                else:
+                    next_population.append(_random_member(target_slots, rng))
         population = next_population[:population_size]
 
         # Checkpoint
@@ -460,6 +486,126 @@ def _load_budgets(cfg: dict) -> dict[str, Budget]:
         )
         out[bd.get("name", f"stage{b.stage}")] = b
     return out
+
+
+def _load_db_selection_cfg(cfg: dict[str, Any], evox_cfg: dict[str, Any]) -> dict[str, Any]:
+    db_cfg = cfg.get("program_db", cfg.get("database", {}))
+    selection_cfg = dict(db_cfg.get("selection", {}) if isinstance(db_cfg, dict) else {})
+    selection_cfg.update(evox_cfg.get("program_db_selection", {}))
+    return {
+        "enabled": bool(selection_cfg.get("enabled", True)),
+        "archive_name": str(selection_cfg.get("archive_name", "pareto")),
+        "scope": str(selection_cfg.get("scope", "all_runs")),
+        "seed_fraction": float(selection_cfg.get("seed_fraction", 0.25)),
+        "parent_fraction": float(selection_cfg.get("parent_fraction", 0.25)),
+        "limit": int(selection_cfg.get("limit", 64)),
+        "min_score": selection_cfg.get("min_score"),
+    }
+
+
+def _initial_population(
+    *,
+    population_size: int,
+    target_slots: list[str],
+    rng: random.Random,
+    program_db: ProgramDB | None,
+    db_selection_cfg: dict[str, Any],
+) -> list[PopulationMember]:
+    population: list[PopulationMember] = []
+    db_pool = _db_parent_pool(program_db, target_slots, db_selection_cfg)
+    n_seed = min(
+        len(db_pool),
+        max(0, int(population_size * db_selection_cfg["seed_fraction"])),
+    )
+    for parent in rng.sample(db_pool, n_seed) if n_seed else []:
+        _append_unique_member(
+            population,
+            PopulationMember(
+                prog_genome=dict(parent["prog_genome"]),
+                parent_ids=(str(parent["candidate_id"]),),
+                source="db_archive_seed",
+            ),
+        )
+    attempts = 0
+    while len(population) < population_size:
+        if _append_unique_member(population, _random_member(target_slots, rng)):
+            attempts = 0
+            continue
+        attempts += 1
+        if attempts > population_size * 10:
+            population.append(_random_member(target_slots, rng))
+            attempts = 0
+    return population
+
+
+def _db_parent_pool(
+    program_db: ProgramDB | None,
+    target_slots: list[str],
+    db_selection_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if program_db is None or not db_selection_cfg["enabled"]:
+        return []
+    parents = program_db.parent_programs(
+        limit=int(db_selection_cfg["limit"]),
+        archive_name=str(db_selection_cfg["archive_name"]),
+        scope=str(db_selection_cfg["scope"]),
+        min_score=db_selection_cfg["min_score"],
+    )
+    valid: list[dict[str, Any]] = []
+    for parent in parents:
+        genome = parent.get("prog_genome") or {}
+        if not isinstance(genome, dict):
+            continue
+        if any(slot not in genome for slot in target_slots):
+            continue
+        filtered = {slot: genome[slot] for slot in target_slots}
+        if DEFAULT_REGISTRY.validate_prog_genome(filtered):
+            continue
+        item = dict(parent)
+        item["prog_genome"] = filtered
+        valid.append(item)
+    return valid
+
+
+def _random_member(target_slots: list[str], rng: random.Random) -> PopulationMember:
+    return PopulationMember(
+        prog_genome=DEFAULT_REGISTRY.sample_prog_genome(target_slots, rng),
+        source="random_immigrant",
+    )
+
+
+def _mutated_member(
+    parent: Candidate,
+    target_slots: list[str],
+    rng: random.Random,
+    source: str,
+) -> PopulationMember:
+    return PopulationMember(
+        prog_genome=DEFAULT_REGISTRY.mutate_prog_genome(dict(parent.prog_genome), target_slots, rng),
+        parent_ids=(parent.candidate_id,),
+        source=source,
+    )
+
+
+def _mutated_db_member(
+    parent: dict[str, Any],
+    target_slots: list[str],
+    rng: random.Random,
+) -> PopulationMember:
+    return PopulationMember(
+        prog_genome=DEFAULT_REGISTRY.mutate_prog_genome(dict(parent["prog_genome"]), target_slots, rng),
+        parent_ids=(str(parent["candidate_id"]),),
+        source="db_archive_mutation",
+    )
+
+
+def _append_unique_member(population: list[PopulationMember], member: PopulationMember) -> bool:
+    signature = json.dumps(member.prog_genome, sort_keys=True, default=str)
+    for existing in population:
+        if json.dumps(existing.prog_genome, sort_keys=True, default=str) == signature:
+            return False
+    population.append(member)
+    return True
 
 
 if __name__ == "__main__":

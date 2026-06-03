@@ -258,9 +258,7 @@ class ProgramDB:
                 text_hash=excluded.text_hash,
                 prog_hash=excluded.prog_hash,
                 text_genome_json=excluded.text_genome_json,
-                prog_genome_json=excluded.prog_genome_json,
-                parent_ids_json=excluded.parent_ids_json,
-                metadata_json=excluded.metadata_json
+                prog_genome_json=excluded.prog_genome_json
             """,
             (
                 self.run_id,
@@ -462,18 +460,56 @@ class ProgramDB:
         self.conn.commit()
 
     def best_programs(self, *, limit: int = 16, archive_name: str = "pareto") -> list[dict[str, Any]]:
+        return self.parent_programs(limit=limit, archive_name=archive_name, scope="current_run")
+
+    def parent_programs(
+        self,
+        *,
+        limit: int = 32,
+        archive_name: str = "pareto",
+        scope: str = "all_runs",
+        min_score: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return archived programs suitable for parent sampling."""
+
+        clauses = ["a.archive_name = ?"]
+        params: list[Any] = [archive_name]
+        if scope == "current_run":
+            clauses.append("a.run_id = ?")
+            params.append(self.run_id)
+        elif scope != "all_runs":
+            raise ValueError("parent_programs scope must be 'current_run' or 'all_runs'")
+        if min_score is not None:
+            clauses.append("a.primary_score >= ?")
+            params.append(float(min_score))
+        params.append(int(limit))
         rows = self.conn.execute(
-            """
-            SELECT p.candidate_id, a.primary_score, p.prog_genome_json, p.text_genome_json
+            f"""
+            SELECT
+                p.run_id,
+                p.candidate_id,
+                p.generation,
+                p.island,
+                a.primary_score,
+                p.prog_genome_json,
+                p.text_genome_json,
+                p.parent_ids_json,
+                p.metadata_json
             FROM archive a
             JOIN programs p ON p.run_id = a.run_id AND p.candidate_id = a.candidate_id
-            WHERE a.run_id = ? AND a.archive_name = ?
-            ORDER BY a.primary_score DESC
+            WHERE {" AND ".join(clauses)}
+            ORDER BY a.primary_score DESC, a.updated_at DESC
             LIMIT ?
             """,
-            (self.run_id, archive_name, limit),
+            params,
         ).fetchall()
-        return [dict(row) for row in rows]
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("prog_genome_json", "text_genome_json", "parent_ids_json", "metadata_json"):
+                item[key.removesuffix("_json")] = json.loads(str(item.pop(key)))
+            out.append(item)
+        return out
 
     def _record_metrics(self, evaluation_id: int, metrics: dict[str, Any]) -> None:
         for key, value in metrics.items():

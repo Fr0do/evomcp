@@ -128,12 +128,23 @@ is a query/index layer with:
 - `events`: JSONL events mirrored into SQLite;
 - `insights`: optional lesson notes for future mutations.
 
+When enabled, EvoX uses the database as a lightweight program archive:
+archived programs seed part of the initial population and are mixed into
+next-generation parent sampling. New candidates keep `parent_ids` pointing to
+the elite/archive program they came from, so lineage can be queried later.
+
 Override the location or run id in config:
 
 ```yaml
 program_db:
   path: artifacts/evolution.sqlite
   run_id: local-night-001
+  selection:
+    enabled: true
+    scope: all_runs          # all_runs | current_run
+    seed_fraction: 0.25      # initial population seeded from archive
+    parent_fraction: 0.25    # next-generation parents sampled from archive
+    limit: 64
 ```
 
 or through the environment:
