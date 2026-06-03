@@ -45,6 +45,7 @@ from evomcp.pipeline.evaluator import (
     materialize_prog_genome,
 )
 from evomcp.pipeline.metrics import pareto_front
+from evomcp.pipeline.program_db import ProgramDB
 from evomcp.pipeline.registry import DEFAULT_REGISTRY
 
 log = logging.getLogger(__name__)
@@ -250,6 +251,12 @@ def run(
     events_path = output_dir / "events.jsonl"
     state_path = output_dir / "state.json"
     archive_path = output_dir / "pareto_archive.json"
+    program_db = ProgramDB.from_config(
+        cfg,
+        config_path=config_path,
+        output_dir=output_dir,
+        mode="evox",
+    )
 
     # Validate
     text_errs = DEFAULT_REGISTRY.validate_text_genome(fixed_text)
@@ -290,6 +297,8 @@ def run(
                 metadata={"mode": "evox", "generation": gen},
             )
             cid = candidate.candidate_id
+            if program_db:
+                program_db.record_program(candidate, generation=gen)
 
             # Dedup
             if cid in state.seen_hashes:
@@ -308,6 +317,14 @@ def run(
                 cached = load_eval_cache(cache_dir, ck)
                 if cached is not None:
                     seed_results.append(cached)
+                    if program_db:
+                        program_db.record_evaluation(
+                            candidate,
+                            cached,
+                            generation=gen,
+                            seed=seed,
+                            budget=budget,
+                        )
                     continue
                 if evaluator is None:
                     log.warning("dry-run: no evaluator provided, skipping eval")
@@ -317,20 +334,39 @@ def run(
                 )
                 store_eval_cache(cache_dir, ck, result)
                 seed_results.append(result)
+                if program_db:
+                    program_db.record_evaluation(
+                        candidate,
+                        result,
+                        generation=gen,
+                        seed=seed,
+                        budget=budget,
+                    )
 
             if not seed_results:
                 continue
             mean = _mean_result(seed_results, fixed_text, prog_genome)
             gen_results.append((candidate, mean))
             archive.update(candidate, mean)
-            _append_event(events_path, {
+            event = {
                 "type": "candidate",
                 "generation": gen,
                 "candidate_id": cid[:12],
                 "primary_score": mean.primary_score,
                 "success": mean.success,
                 "secondary_scores": mean.secondary_scores,
-            })
+            }
+            _append_event(events_path, event)
+            if program_db:
+                program_db.record_evaluation(
+                    candidate,
+                    mean,
+                    generation=gen,
+                    seed=-1,
+                    budget=budget,
+                    is_aggregate=True,
+                )
+                program_db.record_event(event)
 
         # --- selection ---------------------------------------------------
         successes = [(c, r) for c, r in gen_results if r.success]
@@ -375,15 +411,20 @@ def run(
         state.rng_state = list(rng.getstate())
         state.save(state_path)
         archive.save(archive_path)
+        if program_db:
+            program_db.record_archive(archive.entries, generation=gen)
 
-        _append_event(events_path, {
+        summary_event = {
             "type": "generation_summary",
             "generation": gen,
             "n_evaluated": len(gen_results),
             "n_success": len(successes),
             "archive_size": len(archive.entries),
             "best_primary": elites[0][1].primary_score if elites else None,
-        })
+        }
+        _append_event(events_path, summary_event)
+        if program_db:
+            program_db.record_event(summary_event)
 
     # Final summary
     best = archive.best()
@@ -395,6 +436,9 @@ def run(
             res.primary_score,
             res.secondary_scores,
         )
+    if program_db:
+        program_db.record_run(status="complete")
+        program_db.close()
 
     return archive
 

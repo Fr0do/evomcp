@@ -110,6 +110,54 @@ Every evaluation writes a **trace bundle** under `artifacts/runs/<run_id>/traces
 GEPA reads `trace_feedback_summary(bundle_dir)` before each mutation step.
 EvoX uses only `result.json` (primary + secondary scores).
 
+## Program database
+
+EvoX also writes an OpenEvolve-style SQLite index next to each run:
+
+```text
+artifacts/runs/<run_id>/programs.sqlite
+```
+
+The trace bundles and JSONL logs remain the replayable artifacts. The database
+is a query/index layer with:
+
+- `programs`: genomes, parent ids, generation, island label;
+- `evaluations`: seed-level and aggregate scores/costs/failures;
+- `metrics`: one row per secondary score;
+- `archive`: Pareto/frontier membership;
+- `events`: JSONL events mirrored into SQLite;
+- `insights`: optional lesson notes for future mutations.
+
+Override the location or run id in config:
+
+```yaml
+program_db:
+  path: artifacts/evolution.sqlite
+  run_id: local-night-001
+```
+
+or through the environment:
+
+```bash
+EVOMCP_DB=artifacts/evolution.sqlite evomcp run evox configs/evox.yaml
+```
+
+Useful queries:
+
+```sql
+select candidate_id, primary_score, success, cost_usd, wall_s
+from evaluations
+where is_aggregate = 1
+order by primary_score desc
+limit 10;
+
+select e.candidate_id, m.value_real as plan_score
+from evaluations e
+join metrics m on m.evaluation_id = e.id
+where m.key = 'plan_score'
+order by m.value_real desc;
+```
+
 ## Architecture
 
 ```
@@ -119,6 +167,7 @@ evomcp/
     evaluator.py   Evaluator protocol, ScoringConfig, materialize_prog_genome()
     registry.py    SlotRegistry, TextSlot, ProgSlot (sample/mutate)
     metrics.py     Pareto front, weighted aggregation, constraints
+    program_db.py  SQLite program database / archive index
     tracing.py     TraceBundle, RuntimeSnapshot, trace_feedback_summary()
   optim/
     gepa_runner.py   DSPy PromptMutation + Planner, TextParetoArchive
