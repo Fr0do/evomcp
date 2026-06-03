@@ -236,15 +236,24 @@ def tool_evolve_list_slots(project_root: str = ".") -> dict[str, Any]:
     Returns:
         dict with text_slots and prog_slots
     """
+    project_root = str(Path(project_root).resolve())
     sys.path.insert(0, project_root)
     try:
-        # Re-import to pick up project-specific slots
         import importlib
-        for mod in list(sys.modules):
-            if "search_spaces" in mod or "evomcp.optim.search_spaces" in mod:
-                importlib.reload(sys.modules[mod])
-        import evomcp.optim.search_spaces  # noqa: F401
         from evomcp.pipeline.registry import DEFAULT_REGISTRY
+
+        # `optim.search_spaces` is project-local. The initial implementation
+        # imported `evomcp.optim.search_spaces`, which makes `--project` a no-op.
+        # Clear the registry and import the project's package fresh so repeated
+        # CLI/MCP calls remain deterministic in one server process.
+        DEFAULT_REGISTRY.text_slots.clear()
+        DEFAULT_REGISTRY.prog_slots.clear()
+        DEFAULT_REGISTRY._patch_env.clear()
+        for mod in list(sys.modules):
+            if mod == "optim" or mod.startswith("optim.search_spaces"):
+                sys.modules.pop(mod, None)
+        importlib.invalidate_caches()
+        importlib.import_module("optim.search_spaces")
 
         return {
             "text_slots": {
