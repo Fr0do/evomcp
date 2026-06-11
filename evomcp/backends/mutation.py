@@ -7,16 +7,18 @@ Supported backends (key → class):
     claude      → Anthropic API (default)
     openai      → OpenAI API
     openrouter  → OpenRouter API (OpenAI-compatible)
+    codex       → Local Codex CLI (`codex exec`)
     vllm        → Any OpenAI-compatible endpoint with explicit base_url
     ssh_vllm    → vLLM behind an SSH tunnel to an arbitrary host
 
 YAML shape:
     mutation_backend:
-      backend: claude | openai | openrouter | vllm | ssh_vllm
+      backend: claude | openai | openrouter | codex | vllm | ssh_vllm
       model: <model-id>
       # backend-specific:
       base_url: <url>           # vllm, openrouter
       api_key: <key>            # optional, falls back to env
+      timeout: 300              # codex
       ssh_host: <alias>         # ssh_vllm — any host from ~/.ssh/config
       remote_port: 8000         # ssh_vllm, default 8000
       local_port: 0             # ssh_vllm, 0 = pick free port
@@ -29,6 +31,7 @@ import logging
 import os
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Any, Protocol
@@ -132,6 +135,207 @@ class OpenRouterBackend:
             api_key=api_key,
             max_tokens=max_tokens,
         )
+
+
+# ---------------------------------------------------------------------------
+# Local Codex CLI backend
+# ---------------------------------------------------------------------------
+
+class CodexCLIError(RuntimeError):
+    """Raised when the local Codex CLI mutation backend cannot produce a reply."""
+
+
+_CODEX_OUTPUT_LAST_MESSAGE_SUPPORT: dict[str, bool] = {}
+
+
+def _stderr_tail(stderr: str | None, limit: int = 1000) -> str:
+    text = (stderr or "").strip()
+    return text[-limit:] if text else ""
+
+
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
+
+
+def _compose_codex_prompt(
+    prompt: str | None = None,
+    messages: list[dict[str, Any]] | None = None,
+) -> str:
+    if messages:
+        blocks = []
+        for message in messages:
+            role = str(message.get("role", "user")).strip() or "user"
+            content = _message_content_to_text(message.get("content", ""))
+            blocks.append(f"{role.upper()}:\n{content}")
+        if prompt:
+            blocks.append(f"USER:\n{prompt}")
+        return "\n\n".join(blocks)
+    return prompt or ""
+
+
+def _codex_supports_output_last_message(cli: str, timeout_s: int) -> bool:
+    cached = _CODEX_OUTPUT_LAST_MESSAGE_SUPPORT.get(cli)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [cli, "exec", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=min(timeout_s, 10),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _CODEX_OUTPUT_LAST_MESSAGE_SUPPORT[cli] = False
+        return False
+    combined = f"{result.stdout}\n{result.stderr}"
+    supported = "--output-last-message" in combined
+    _CODEX_OUTPUT_LAST_MESSAGE_SUPPORT[cli] = supported
+    return supported
+
+
+def _extract_codex_stdout_reply(stdout: str | None) -> str:
+    text = (stdout or "").strip()
+    if not text:
+        return ""
+    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
+    return blocks[-1] if blocks else text
+
+
+class CodexCLILM:
+    """Minimal DSPy-compatible LM wrapper around `codex exec`."""
+
+    def __init__(
+        self,
+        model: str = "gpt-5.5",
+        timeout_s: int = 300,
+        cli: str = "codex",
+    ):
+        self.model = model
+        self.model_type = "chat"
+        self.timeout_s = timeout_s
+        self.cli = cli
+        self.kwargs = {"timeout": timeout_s}
+        self.history: list[dict[str, Any]] = []
+
+    def copy(self, **kwargs):
+        clone = type(self)(model=self.model, timeout_s=self.timeout_s, cli=self.cli)
+        clone.kwargs = dict(self.kwargs)
+        clone.history = []
+        for key, value in kwargs.items():
+            if hasattr(clone, key):
+                setattr(clone, key, value)
+            if key in clone.kwargs or not hasattr(clone, key):
+                if value is None:
+                    clone.kwargs.pop(key, None)
+                else:
+                    clone.kwargs[key] = value
+        return clone
+
+    def __call__(
+        self,
+        prompt: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        **kwargs,
+    ) -> list[str]:
+        full_prompt = _compose_codex_prompt(prompt=prompt, messages=messages)
+        timeout_s = int(kwargs.get("timeout", self.timeout_s))
+        reply = self._complete(full_prompt, timeout_s=timeout_s)
+        self.history.append(
+            {
+                "prompt": prompt,
+                "messages": messages,
+                "kwargs": kwargs,
+                "outputs": [reply],
+                "model": self.model,
+            }
+        )
+        return [reply]
+
+    def _complete(self, prompt: str, timeout_s: int) -> str:
+        use_output_file = _codex_supports_output_last_message(self.cli, timeout_s)
+        last_error = "empty reply"
+        last_stderr = ""
+
+        for attempt in range(2):
+            output_path = None
+            try:
+                cmd = [
+                    self.cli,
+                    "exec",
+                    "-m",
+                    self.model,
+                    "--skip-git-repo-check",
+                    "-s",
+                    "read-only",
+                ]
+                if use_output_file:
+                    handle = tempfile.NamedTemporaryFile("w+", delete=False)
+                    output_path = handle.name
+                    handle.close()
+                    cmd.extend(["--output-last-message", output_path])
+                cmd.append("-")
+
+                result = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                )
+                last_stderr = result.stderr
+                if result.returncode != 0:
+                    last_error = f"exit code {result.returncode}"
+                    continue
+
+                if output_path:
+                    with open(output_path, encoding="utf-8") as fh:
+                        reply = fh.read().strip()
+                else:
+                    reply = _extract_codex_stdout_reply(result.stdout)
+
+                if reply:
+                    return reply
+                last_error = "empty reply"
+            except subprocess.TimeoutExpired as exc:
+                last_error = f"timeout after {timeout_s}s"
+                last_stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+            except OSError as exc:
+                last_error = str(exc)
+                last_stderr = ""
+            finally:
+                if output_path:
+                    try:
+                        os.unlink(output_path)
+                    except FileNotFoundError:
+                        pass
+
+            if attempt == 0:
+                log.warning("codex CLI mutation attempt failed: %s", last_error)
+
+        tail = _stderr_tail(last_stderr)
+        detail = f"; stderr tail: {tail}" if tail else ""
+        raise CodexCLIError(
+            f"codex CLI mutation failed after 2 attempts: {last_error}{detail}"
+        )
+
+
+@register("codex")
+class CodexCLIBackend:
+    def build_lm(self, cfg):
+        model = cfg.get("model", "gpt-5.5")
+        timeout_s = int(cfg.get("timeout", 300))
+        cli = cfg.get("cli", "codex")
+        return CodexCLILM(model=model, timeout_s=timeout_s, cli=cli)
 
 
 @register("vllm")
