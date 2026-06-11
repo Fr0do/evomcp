@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,54 @@ from evomcp.optim.evox_runner import _load_budgets, load_evaluator_from_config
 from evomcp.project_loader import load_project_slots
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Robust mutation-reply JSON parsing
+# ---------------------------------------------------------------------------
+
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+
+
+def _loads_mutation_reply(raw: Any) -> dict[str, Any]:
+    """Parse a mutation/planner LM reply into a dict of slot texts.
+
+    Small models (e.g. openrouter haiku) often wrap the JSON in ```json
+    code fences, prepend prose ("Here is the revised JSON:"), or return an
+    empty string. A bare ``json.loads`` then dies with
+    ``Expecting value: line 1 column 1 (char 0)`` and kills the whole
+    mutation step. This strips fences / leading prose and falls back to the
+    first balanced ``{...}`` object before parsing. Raises ValueError if no
+    JSON object can be recovered.
+    """
+    text = "" if raw is None else str(raw).strip()
+    if not text:
+        raise ValueError("empty mutation reply")
+
+    candidates: list[str] = [text]
+    # 1) fenced code block(s)
+    candidates.extend(m.group(1).strip() for m in _FENCE_RE.finditer(text))
+    # 2) first balanced {...} object (handles leading/trailing prose)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start:end + 1])
+
+    last_exc: Exception | None = None
+    for cand in candidates:
+        cand = cand.strip()
+        if not cand:
+            continue
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            continue
+        if isinstance(obj, dict):
+            return obj
+    raise ValueError(
+        f"no JSON object in mutation reply (first 200 chars: {text[:200]!r})"
+    ) from last_exc
 
 
 # ---------------------------------------------------------------------------
@@ -345,19 +394,31 @@ def run(
         }
 
         try:
-            mutation_out = mutator(
-                slot_names=", ".join(target_slots),
-                current_texts=json.dumps(current_genome, ensure_ascii=False),
-                trace_feedback=feedback_str,
-            )
-            proposed_texts = json.loads(mutation_out.revised_texts)
+            # The mutation LM occasionally returns fenced/prose-wrapped or
+            # empty JSON; parse robustly and retry the mutator once before
+            # giving up on this round.
+            proposed_texts: dict[str, Any] | None = None
+            for attempt in range(2):
+                mutation_out = mutator(
+                    slot_names=", ".join(target_slots),
+                    current_texts=json.dumps(current_genome, ensure_ascii=False),
+                    trace_feedback=feedback_str,
+                )
+                try:
+                    proposed_texts = _loads_mutation_reply(mutation_out.revised_texts)
+                    break
+                except ValueError as exc:
+                    log.warning("GEPA mutation reply unparseable (attempt %d/2): %s",
+                                attempt + 1, exc)
+            if proposed_texts is None:
+                raise ValueError("mutator returned no parseable JSON after 2 attempts")
 
             plan_out = planner(
                 slot_names=", ".join(target_slots),
                 revised_texts=json.dumps(proposed_texts, ensure_ascii=False),
                 constraints=json.dumps(constraints_dict, ensure_ascii=False),
             )
-            accepted_texts = json.loads(plan_out.accepted_texts)
+            accepted_texts = _loads_mutation_reply(plan_out.accepted_texts)
 
             # Validate and update genome
             errs = DEFAULT_REGISTRY.validate_text_genome(accepted_texts)
