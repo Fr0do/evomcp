@@ -81,6 +81,17 @@ class SlotRegistry:
     # Patch env_overrides registry — populated by optim/search_spaces/patches.py
     _patch_env: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    def reset(self) -> None:
+        """Clear all registered slots and patch envs.
+
+        Project-specific search spaces are loaded dynamically into the shared
+        registry, so repeated imports need an explicit reset to avoid duplicate
+        registration failures and stale state leaking across runs.
+        """
+        self.text_slots.clear()
+        self.prog_slots.clear()
+        self._patch_env.clear()
+
     def register_text(self, slot: TextSlot) -> None:
         if slot.name in self.text_slots:
             raise ValueError(f"text slot already registered: {slot.name}")

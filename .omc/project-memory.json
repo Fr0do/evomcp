@@ -1,0 +1,193 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1776589168138,
+  "projectRoot": "/Users/mkurkin/experiments/projects/evomcp/code/evomcp",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "artifacts": {
+      "path": "artifacts",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776589168121,
+      "keyFiles": []
+    },
+    "evomcp": {
+      "path": "evomcp",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1776589168121,
+      "keyFiles": [
+        "__init__.py",
+        "cli.py",
+        "project_loader.py",
+        "server.py"
+      ]
+    },
+    "evomcp.egg-info": {
+      "path": "evomcp.egg-info",
+      "purpose": null,
+      "fileCount": 6,
+      "lastAccessed": 1776589168122,
+      "keyFiles": [
+        "PKG-INFO",
+        "SOURCES.txt",
+        "dependency_links.txt",
+        "entry_points.txt",
+        "requires.txt"
+      ]
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776589168122,
+      "keyFiles": [
+        "SKILL.md"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 1,
+      "lastAccessed": 1776589168122,
+      "keyFiles": [
+        "test_project_loader.py"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "evomcp/optim/gepa_runner.py",
+      "accessCount": 5,
+      "lastAccessed": 1776607258400,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/optim/hybrid_runner.py",
+      "accessCount": 3,
+      "lastAccessed": 1776607267310,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/server.py",
+      "accessCount": 2,
+      "lastAccessed": 1776592773164,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1776592775908,
+      "type": "directory"
+    },
+    {
+      "path": "skills/SKILL.md",
+      "accessCount": 2,
+      "lastAccessed": 1776655601249,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_gore_captcha.py",
+      "accessCount": 2,
+      "lastAccessed": 1776655865532,
+      "type": "file"
+    },
+    {
+      "path": "AUDIT.md",
+      "accessCount": 1,
+      "lastAccessed": 1776607007508,
+      "type": "file"
+    },
+    {
+      "path": "pyproject.toml",
+      "accessCount": 1,
+      "lastAccessed": 1776607180740,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/backends/__init__.py",
+      "accessCount": 1,
+      "lastAccessed": 1776607196855,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/backends/mutation.py",
+      "accessCount": 1,
+      "lastAccessed": 1776607234740,
+      "type": "file"
+    },
+    {
+      "path": "tests/test_mutation_backends.py",
+      "accessCount": 1,
+      "lastAccessed": 1776607286594,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/metrics/__init__.py",
+      "accessCount": 1,
+      "lastAccessed": 1776655761909,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/metrics/gore_captcha.py",
+      "accessCount": 1,
+      "lastAccessed": 1776655803756,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/pipeline/candidate.py",
+      "accessCount": 1,
+      "lastAccessed": 1776694699176,
+      "type": "file"
+    },
+    {
+      "path": "evomcp/pipeline/evaluator.py",
+      "accessCount": 1,
+      "lastAccessed": 1776694699198,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

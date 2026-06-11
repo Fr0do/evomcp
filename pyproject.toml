@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "evomcp"
 version = "0.1.0"
-description = "GEPA + EvoX evolutionary optimizer as a Claude MCP server and skill"
+description = "GEPA + EvoX evolutionary optimizer as an MCP server and Codex skill"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

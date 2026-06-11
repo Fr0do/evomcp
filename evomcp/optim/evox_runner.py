@@ -46,6 +46,7 @@ from evomcp.pipeline.evaluator import (
 )
 from evomcp.pipeline.metrics import pareto_front
 from evomcp.pipeline.registry import DEFAULT_REGISTRY
+from evomcp.project_loader import load_project_slots
 
 log = logging.getLogger(__name__)
 
@@ -232,6 +233,7 @@ def run(
     Returns:
         ParetoArchive of non-dominated candidates found during the run.
     """
+    load_project_slots(config_path)
     cfg = load_config(config_path)
     evox_cfg = cfg.get("evox", {})
 
@@ -403,6 +405,33 @@ def run(
 # Budget loader (shared with other runners)
 # ---------------------------------------------------------------------------
 
+def load_evaluator_from_config(cfg: dict) -> Evaluator | None:
+    """Resolve `cfg["evaluator"]` to a concrete Evaluator instance.
+
+    YAML shape:
+      evaluator:
+        module: optim.evaluator        # importable from project_root
+        class:  GoreCipherEvaluator
+        init_kwargs:                   # passed to __init__
+          dataset_path: data/cipher_eval.jsonl
+        version: "0.1"                 # optional, used in cache key
+        dataset_version: "cipher-v1"   # optional, used in cache key
+
+    Returns None if `evaluator` is absent or lacks module/class — preserves
+    the dry-run path where runners only validate config + slot registration.
+    """
+    eval_cfg = cfg.get("evaluator") or {}
+    mod_name = eval_cfg.get("module")
+    cls_name = eval_cfg.get("class")
+    if not (mod_name and cls_name):
+        return None
+    import importlib
+    mod = importlib.import_module(mod_name)
+    cls = getattr(mod, cls_name)
+    kwargs = dict(eval_cfg.get("init_kwargs") or {})
+    return cls(**kwargs)
+
+
 def _load_budgets(cfg: dict) -> dict[str, Budget]:
     """Parse the budgets list from base config into a name → Budget dict."""
     out = {}
@@ -421,4 +450,11 @@ def _load_budgets(cfg: dict) -> dict[str, Budget]:
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    run(sys.argv[1])
+    cfg_path = sys.argv[1]
+    resume = "--resume" in sys.argv[2:]
+    load_project_slots(cfg_path)
+    cfg = load_config(cfg_path)
+    evaluator = load_evaluator_from_config(cfg)
+    if evaluator is None:
+        log.warning("No evaluator configured; running in dry-run mode.")
+    run(cfg_path, evaluator=evaluator, resume=resume)

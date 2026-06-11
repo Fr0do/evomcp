@@ -32,12 +32,14 @@ import yaml
 from evomcp.pipeline.candidate import Budget, Candidate, EvalResult
 from evomcp.pipeline.evaluator import Evaluator, cache_key, load_eval_cache, store_eval_cache
 from evomcp.pipeline.registry import DEFAULT_REGISTRY
+from evomcp.project_loader import load_project_slots
 from evomcp.optim.evox_runner import (
     EvoXState,
     ParetoArchive,
     _append_event,
     _dominates,
     _load_budgets,
+    load_evaluator_from_config,
 )
 from evomcp.optim.gepa_runner import TextParetoArchive
 
@@ -60,6 +62,7 @@ def run(
     Returns:
         (ParetoArchive of prog candidates, TextParetoArchive of text candidates)
     """
+    load_project_slots(config_path)
     cfg = load_config(config_path)
     evox_cfg = cfg.get("evox", {})
     inner_gepa_cfg = cfg.get("inner_gepa", {})
@@ -358,15 +361,10 @@ def _run_inner_gepa(
     """
     try:
         import dspy
+        from evomcp.backends.mutation import build_mutation_lm
 
         mutation_backend: dict = inner_gepa_cfg.get("mutation_backend", {})
-        lm_model = mutation_backend.get("model", "claude-haiku-4-5")
-        lm_backend = mutation_backend.get("backend", "claude")
-
-        if lm_backend == "claude":
-            lm = dspy.LM(f"anthropic/{lm_model}", max_tokens=4096)
-        else:
-            lm = dspy.LM(lm_model, max_tokens=4096)
+        lm = build_mutation_lm(mutation_backend)
         dspy.configure(lm=lm)
 
         from evomcp.optim.gepa_runner import _build_signatures
@@ -438,4 +436,11 @@ def _run_inner_gepa(
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    run(sys.argv[1])
+    cfg_path = sys.argv[1]
+    resume = "--resume" in sys.argv[2:]
+    load_project_slots(cfg_path)
+    cfg = load_config(cfg_path)
+    evaluator = load_evaluator_from_config(cfg)
+    if evaluator is None:
+        log.warning("No evaluator configured; running in dry-run mode.")
+    run(cfg_path, evaluator=evaluator, resume=resume)

@@ -1,7 +1,7 @@
 """evomcp CLI — `evomcp <subcommand>`.
 
 Usage:
-    evomcp serve                       # stdio MCP server (for Claude Code)
+    evomcp serve                       # stdio MCP server
     evomcp serve --http [--port 8765]  # HTTP/SSE MCP server
 
     evomcp run gepa   configs/gepa.yaml   [--resume] [--foreground]

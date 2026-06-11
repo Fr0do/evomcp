@@ -1,6 +1,6 @@
 # evomcp
 
-**GEPA + EvoX evolutionary optimizer — standalone Claude MCP server and skill.**
+**GEPA + EvoX evolutionary optimizer — standalone MCP server and Codex skill.**
 
 Evolves two mutation surfaces against a single evaluator:
 
@@ -23,7 +23,7 @@ pip install evomcp
 ## Quick start
 
 ```bash
-# Start the MCP server (add to Claude Code settings)
+# Start the MCP server
 evomcp serve
 
 # Or run directly from CLI
@@ -35,13 +35,13 @@ evomcp status
 evomcp export <run_id>
 ```
 
-## Claude Code integration
+## Codex integration
 
-1. Add to `~/.claude/settings.json`:
+1. Add the MCP server to your Codex MCP configuration:
 
 ```json
 {
-  "mcpServers": {
+  "mcp_servers": {
     "evomcp": {
       "command": "evomcp",
       "args": ["serve"],
@@ -51,10 +51,14 @@ evomcp export <run_id>
 }
 ```
 
-2. Copy or symlink `skills/SKILL.md` into your project's `skills/` directory
-   so `/evolve` is available in Claude Code.
+2. Keep `skills/SKILL.md` available to Codex so the `evolve` skill can be triggered
+   when you ask to run GEPA, EvoX, or hybrid optimization.
 
-3. In Claude: `/evolve gepa configs/gepa.yaml`
+3. In Codex, ask for the run directly, for example:
+
+```text
+Use the evolve skill to run GEPA with configs/gepa.yaml.
+```
 
 ## Project integration
 
@@ -128,7 +132,7 @@ evomcp/
   server.py        FastMCP server (5 tools)
   cli.py           evomcp CLI
 skills/
-  SKILL.md         Claude Code /evolve skill
+  SKILL.md         Codex evolve skill
 ```
 
 ## Implementing an evaluator

@@ -34,7 +34,8 @@ from evomcp.pipeline.candidate import Budget, Candidate, EvalResult
 from evomcp.pipeline.evaluator import Evaluator, cache_key, load_eval_cache, store_eval_cache
 from evomcp.pipeline.registry import DEFAULT_REGISTRY
 from evomcp.pipeline.tracing import trace_feedback_summary
-from evomcp.optim.evox_runner import _load_budgets
+from evomcp.optim.evox_runner import _load_budgets, load_evaluator_from_config
+from evomcp.project_loader import load_project_slots
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ def run(
     Returns:
         TextParetoArchive of non-dominated text candidates.
     """
+    load_project_slots(config_path)
     cfg = load_config(config_path)
     gepa_cfg = cfg.get("gepa", {})
 
@@ -213,18 +215,11 @@ def run(
         log.info("Resuming from existing text archive: %s", archive_path)
         # Re-populate archive from disk (simplified: just read for logging)
 
-    # Configure DSPy LM for mutation
-    lm_model = mutation_backend.get("model", "claude-haiku-4-5")
-    lm_backend = mutation_backend.get("backend", "claude")
-
+    # Configure DSPy LM for mutation via backend registry
     try:
         import dspy
-        if lm_backend == "claude":
-            lm = dspy.LM(f"anthropic/{lm_model}", max_tokens=4096)
-        elif lm_backend == "openai":
-            lm = dspy.LM(f"openai/{lm_model}", max_tokens=4096)
-        else:
-            lm = dspy.LM(lm_model, max_tokens=4096)
+        from evomcp.backends.mutation import build_mutation_lm
+        lm = build_mutation_lm(mutation_backend)
         dspy.configure(lm=lm)
         PromptMutationSignature, PlannerSignature = _build_signatures()
         mutator = dspy.ChainOfThought(PromptMutationSignature)
@@ -240,7 +235,12 @@ def run(
                                          for name in frozen_slots
                                          if name in DEFAULT_REGISTRY.text_slots}}
 
-    log.info("GEPA: rounds=%d slots=%s backend=%s/%s", rounds, target_slots, lm_backend, lm_model)
+    log.info(
+        "GEPA: rounds=%d slots=%s backend=%s/%s",
+        rounds, target_slots,
+        mutation_backend.get("backend", "claude"),
+        mutation_backend.get("model", "claude-haiku-4-5"),
+    )
 
     for rnd in range(rounds):
         t0 = time.monotonic()
@@ -403,4 +403,11 @@ def _append_event(path: Path, event: dict) -> None:
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    run(sys.argv[1])
+    cfg_path = sys.argv[1]
+    resume = "--resume" in sys.argv[2:]
+    load_project_slots(cfg_path)
+    cfg = load_config(cfg_path)
+    evaluator = load_evaluator_from_config(cfg)
+    if evaluator is None:
+        log.warning("No evaluator configured; running in dry-run mode.")
+    run(cfg_path, evaluator=evaluator, resume=resume)

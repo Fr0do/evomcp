@@ -8,7 +8,7 @@ Quick install:
     pip install -e ~/experiments/evomcp
 
 Quick start (MCP server):
-    evomcp serve                        # stdio MCP server for Claude
+    evomcp serve                        # stdio MCP server
 
 Quick start (CLI):
     evomcp run gepa configs/gepa.yaml

@@ -1,9 +1,9 @@
 """evomcp MCP server.
 
-Exposes GEPA + EvoX + Hybrid evolution as Claude MCP tools.
+Exposes GEPA + EvoX + Hybrid evolution as MCP tools.
 
 Run:
-    evomcp serve           # stdio (default, works with Claude Code)
+    evomcp serve           # stdio (default)
     evomcp serve --http    # HTTP/SSE on port 8765
 
 Requires: pip install fastmcp
@@ -18,6 +18,8 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+
+from evomcp.project_loader import load_project_slots
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +83,15 @@ def tool_evolve_run(
     cfg = Path(config_path)
     if not cfg.exists():
         return {"error": f"config not found: {cfg}"}
+    try:
+        project_root = load_project_slots(cfg)
+    except ModuleNotFoundError as exc:
+        return {
+            "error": (
+                f"could not import project search spaces near {cfg.resolve()}: {exc}. "
+                "Expected an importable `optim/search_spaces` package."
+            )
+        }
 
     run_id = f"{mode}-{uuid.uuid4().hex[:8]}"
     runner_module = {
@@ -101,6 +112,7 @@ def tool_evolve_run(
         "run_id": run_id,
         "mode": mode,
         "config_path": str(cfg.resolve()),
+        "project_root": str(project_root),
         "resume": resume,
         "artifact_dir": str(artifact_dir),
         "log": str(stdout_log),
@@ -236,17 +248,12 @@ def tool_evolve_list_slots(project_root: str = ".") -> dict[str, Any]:
     Returns:
         dict with text_slots and prog_slots
     """
-    sys.path.insert(0, project_root)
     try:
-        # Re-import to pick up project-specific slots
-        import importlib
-        for mod in list(sys.modules):
-            if "search_spaces" in mod or "evomcp.optim.search_spaces" in mod:
-                importlib.reload(sys.modules[mod])
-        import evomcp.optim.search_spaces  # noqa: F401
+        resolved_root = load_project_slots(project_root)
         from evomcp.pipeline.registry import DEFAULT_REGISTRY
 
         return {
+            "project_root": str(resolved_root),
             "text_slots": {
                 name: {
                     "role": s.role,
@@ -268,9 +275,13 @@ def tool_evolve_list_slots(project_root: str = ".") -> dict[str, Any]:
                 for name, s in DEFAULT_REGISTRY.prog_slots.items()
             },
         }
-    finally:
-        if project_root in sys.path:
-            sys.path.remove(project_root)
+    except ModuleNotFoundError as exc:
+        return {
+            "error": (
+                f"could not import project search spaces from {Path(project_root).resolve()}: {exc}. "
+                "Expected an importable `optim/search_spaces` package."
+            )
+        }
 
 
 def tool_evolve_inspect(bundle_dir: str) -> dict[str, Any]:
