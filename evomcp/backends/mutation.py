@@ -212,7 +212,12 @@ def _extract_codex_stdout_reply(stdout: str | None) -> str:
 
 
 class CodexCLILM:
-    """Minimal DSPy-compatible LM wrapper around `codex exec`."""
+    """Minimal DSPy-compatible LM wrapper around `codex exec`.
+
+    Kept dspy-free at module level (repo convention: dspy imports are lazy).
+    GEPA enforces `isinstance(lm, dspy.BaseLM)`, so `CodexCLIBackend.build_lm`
+    mixes the real BaseLM in dynamically at construction time.
+    """
 
     def __init__(
         self,
@@ -332,10 +337,15 @@ class CodexCLILM:
 @register("codex")
 class CodexCLIBackend:
     def build_lm(self, cfg):
+        dspy = _import_dspy()
         model = cfg.get("model", "gpt-5.5")
         timeout_s = int(cfg.get("timeout", 300))
         cli = cfg.get("cli", "codex")
-        return CodexCLILM(model=model, timeout_s=timeout_s, cli=cli)
+        # GEPA проверяет isinstance(lm, dspy.BaseLM); подмешиваем BaseLM в
+        # рантайме, не теряя dspy-free импорт модуля. MRO: CodexCLILM первым,
+        # его __init__/__call__ перекрывают BaseLM (CLI — это транспорт).
+        cls = type("CodexCLIBaseLM", (CodexCLILM, dspy.BaseLM), {})
+        return cls(model=model, timeout_s=timeout_s, cli=cli)
 
 
 @register("vllm")
