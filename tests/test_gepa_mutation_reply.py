@@ -35,3 +35,30 @@ def test_inline_prose_around_object():
 def test_unrecoverable_raises_valueerror(bad):
     with pytest.raises(ValueError):
         _loads_mutation_reply(bad)
+
+
+def test_slot_prefixed_fallback():
+    # The format an older signature docstring requested: `slot: <text>`.
+    reply = (
+        "paper2spec_system: You are a reproduction engineer.\n"
+        "Work only from the evidence.\n"
+        "paper2spec_claims: Decompose into checkable claims."
+    )
+    out = _loads_mutation_reply(
+        reply, slot_names=["paper2spec_system", "paper2spec_claims"])
+    assert set(out) == {"paper2spec_system", "paper2spec_claims"}
+    assert out["paper2spec_system"].startswith("You are a reproduction engineer")
+    assert "Work only from the evidence." in out["paper2spec_system"]
+    assert out["paper2spec_claims"] == "Decompose into checkable claims."
+
+
+def test_slot_prefixed_needs_known_slots():
+    # Without slot_names, a non-JSON slot blob is unrecoverable.
+    with pytest.raises(ValueError):
+        _loads_mutation_reply("paper2spec_system: text here")
+
+
+def test_json_preferred_over_slot_fallback():
+    # A valid JSON object is returned even when slot_names are provided.
+    out = _loads_mutation_reply('{"s": "v"}', slot_names=["s"])
+    assert out == {"s": "v"}

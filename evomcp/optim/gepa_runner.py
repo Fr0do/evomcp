@@ -48,16 +48,20 @@ log = logging.getLogger(__name__)
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
-def _loads_mutation_reply(raw: Any) -> dict[str, Any]:
+def _loads_mutation_reply(raw: Any, slot_names: list[str] | None = None) -> dict[str, Any]:
     """Parse a mutation/planner LM reply into a dict of slot texts.
 
     Small models (e.g. openrouter haiku) often wrap the JSON in ```json
-    code fences, prepend prose ("Here is the revised JSON:"), or return an
-    empty string. A bare ``json.loads`` then dies with
-    ``Expecting value: line 1 column 1 (char 0)`` and kills the whole
-    mutation step. This strips fences / leading prose and falls back to the
-    first balanced ``{...}`` object before parsing. Raises ValueError if no
-    JSON object can be recovered.
+    code fences, prepend prose ("Here is the revised JSON:"), return an
+    empty string, or — following an older signature docstring — emit the
+    line-prefixed ``slot_name: <text>`` format instead of JSON. A bare
+    ``json.loads`` then dies with ``Expecting value: line 1 column 1
+    (char 0)`` and kills the whole mutation step.
+
+    Strategy: strip fences / leading prose, try the first balanced ``{...}``
+    object, and — if ``slot_names`` is given — fall back to splitting the
+    reply on ``<slot>:`` headers. Raises ValueError if nothing parseable
+    can be recovered.
     """
     text = "" if raw is None else str(raw).strip()
     if not text:
@@ -84,9 +88,40 @@ def _loads_mutation_reply(raw: Any) -> dict[str, Any]:
             continue
         if isinstance(obj, dict):
             return obj
+
+    # 3) line-prefixed `slot_name: <text>` fallback (the format an older
+    #    signature docstring requested). Only attempted with known slots so
+    #    the split points are unambiguous.
+    if slot_names:
+        parsed = _parse_slot_prefixed(text, slot_names)
+        if parsed:
+            return parsed
+
     raise ValueError(
         f"no JSON object in mutation reply (first 200 chars: {text[:200]!r})"
     ) from last_exc
+
+
+def _parse_slot_prefixed(text: str, slot_names: list[str]) -> dict[str, str]:
+    """Split a ``slot_name: <text>`` blob into {slot: text} for known slots.
+
+    Finds each ``^<slot>:`` header (a slot name at the start of a line) and
+    takes everything up to the next known header as that slot's value.
+    """
+    headers: list[tuple[int, int, str]] = []  # (start, end_of_header, slot)
+    for name in slot_names:
+        for m in re.finditer(rf"(?m)^\s*{re.escape(name)}\s*:", text):
+            headers.append((m.start(), m.end(), name))
+    if not headers:
+        return {}
+    headers.sort()
+    out: dict[str, str] = {}
+    for i, (_start, hdr_end, name) in enumerate(headers):
+        body_end = headers[i + 1][0] if i + 1 < len(headers) else len(text)
+        value = text[hdr_end:body_end].strip()
+        if value and name not in out:
+            out[name] = value
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +139,9 @@ def _build_signatures():
 
     class PromptMutationSignature(dspy.Signature):
         """Given the current text genome and trace feedback from recent evaluations,
-        propose improved versions of each text slot. Return each slot on a new line
-        preceded by its name, e.g.:  critic_fengshui_prompt: <revised text>"""
+        propose improved versions of each text slot. Return ONLY a single JSON
+        object mapping each slot name to its revised text, e.g.:
+        {"critic_fengshui_prompt": "<revised text>"}. No prose, no code fences."""
 
         slot_names: str = dspy.InputField(
             desc="Comma-separated text slot names to mutate."
@@ -405,7 +441,8 @@ def run(
                     trace_feedback=feedback_str,
                 )
                 try:
-                    proposed_texts = _loads_mutation_reply(mutation_out.revised_texts)
+                    proposed_texts = _loads_mutation_reply(
+                        mutation_out.revised_texts, slot_names=list(target_slots))
                     break
                 except ValueError as exc:
                     log.warning("GEPA mutation reply unparseable (attempt %d/2): %s",
@@ -418,7 +455,8 @@ def run(
                 revised_texts=json.dumps(proposed_texts, ensure_ascii=False),
                 constraints=json.dumps(constraints_dict, ensure_ascii=False),
             )
-            accepted_texts = _loads_mutation_reply(plan_out.accepted_texts)
+            accepted_texts = _loads_mutation_reply(
+                plan_out.accepted_texts, slot_names=list(target_slots))
 
             # Validate and update genome
             errs = DEFAULT_REGISTRY.validate_text_genome(accepted_texts)
